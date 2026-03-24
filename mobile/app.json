@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "DebtTriage",
+    "slug": "debt-triage",
+    "version": "1.0.0",
+    "scheme": "debttriage",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#01696F"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.debttriage.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Not required"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#01696F"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
