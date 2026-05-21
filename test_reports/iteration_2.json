@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 2 (Settings + Subscription + due_date refactor + Free-tier gating). Backend: 36/38 pytest pass (13/14 new + 23/24 carried over). Frontend E2E (demo@debtwise.app): all 7 requested flows verified including Settings page, profile name save, Subscription plan cards with 'Save 17%' badge, monthly subscribe redirecting to checkout.stripe.com, mm/dd/yy display on debt cards, calendar popover allowing day 31 selection, free-limit-banner + Add-debt redirect to /settings?upgrade=1, simulator locked + upgrade button, ?upgrade=1 ring highlight on subscription section.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/subscription/status/{session_id}",
+        "issue": "Returns 500 (InvalidRequestError: No such checkout.session) when polling status of a session that was just created via POST /api/subscription/checkout. Backend logs show emergentintegrations creates the session via the Emergent proxy host (integrations.emergentagent.com/stripe/v1/checkout/sessions) but get_checkout_status() then queries api.stripe.com directly with the proxy-only session_id, which Stripe rejects. This breaks the post-payment polling flow on the Settings page after Stripe redirect-back. Library-level inconsistency. Wrap get_checkout_status in try/except → return 'unpaid' fallback OR ensure the emergentintegrations StripeCheckout client routes status checks through the same proxy host as create_checkout_session.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {"endpoint": "/api/reminders/upcoming (legacy due_day path)", "issue": "Only triggered for historical records that still have a `due_day` field in the DB. New POST /debts (DebtPayload) silently drops any extra `due_day` field (pydantic ignores extras), so iteration-1 tests that seeded `due_day` no longer exercise this fallback. The fallback code itself is correct; just the iteration-1 test (test_debtwise_api.py::test_upcoming_returns_sorted) is now stale."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/debts edit dialog", "issues": ["Modal background is semi-transparent and the debt cards behind the dialog show through (visible in screenshot). Consider increasing the modal backdrop opacity or adding a stronger blur for better focus."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_subscription_and_debts_v2.py",
+    "/app/backend/tests/test_debtwise_api.py",
+    "/app/test_reports/pytest/pytest_iter2_full.xml"
+  ],
+  "action_items": [
+    "HIGH: Fix /api/subscription/status/{session_id} 500. Either (a) catch CheckoutError from emergentintegrations and return {payment_status:'unpaid', status:'open'} so the frontend polling loop can continue, or (b) configure StripeCheckout client to use the Emergent proxy for get_checkout_status too. Without this, after the user completes Stripe payment and is redirected back to /settings?session_id=..., the polling will crash and premium will never be granted client-side (webhook path is the only fallback).",
+    "LOW: Update iteration-1 test (test_debtwise_api.py::test_upcoming_returns_sorted and seeded_debts fixture) to use `due_date` (YYYY-MM-DD) instead of legacy `due_day`.",
+    "LOW: Tighten modal overlay opacity in Debts edit dialog."
+  ],
+  "critical_code_review_comments": [
+    "/api/debts gate correctly checks is_premium(user) and FREE_DEBT_LIMIT (3) before insert; 402 detail message includes 'Free plan is limited to 3 debts' as expected.",
+    "DebtPayload.due_date is Optional[str] without regex validation — a malformed value (e.g. '2026-13-99') is accepted at write time and only fails inside /api/reminders/upcoming's datetime.fromisoformat. Consider validating with `pattern=r'^\\d{4}-\\d{2}-\\d{2}$'` or `date` type.",
+    "is_premium() correctly handles tz-naive ISO strings by assuming UTC. Good.",
+    "/api/subscription/checkout writes a payment_transactions doc atomically before returning the Stripe URL — correct.",
+    "POST /api/webhook/stripe correctly returns 200 even on malformed body (logs warning) — prevents Stripe retry storms on bad payloads.",
+    "/api/subscription/cancel only clears `plan` but keeps `premium_until` — matches spec.",
+    "Frontend Settings.jsx ?upgrade=1 query param adds ring highlight + scrollIntoView — verified.",
+    "Free limit banner only shows when non-premium user has >=3 debts; correctly hidden otherwise.",
+    "Server.py is now 838 lines — borderline. Consider splitting subscription + stripe code into a separate module."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_subscription_and_debts_v2.py (created)"
+  ],
+  "success_rate": {"backend": "94.7% (36/38 = new 13/14 + old 23/24)", "frontend": "100% on all 7 requested flows"},
+  "test_credentials": "demo@debtwise.app / Demo@1234 (free tier, 3 seeded debts). admin@debtwise.app / Admin@123. Test users created during pytest are test_<uuid>@example.com / Passw0rd!.",
+  "seed_data_creation": "Pytest created throwaway users and TEST_-prefixed debts on those users. The demo user's name was changed to 'Demo Renamed' during frontend testing of PUT /api/profile (cosmetic, can be reverted via the Settings UI).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests in /app/backend/tests/. Iter2 tests at test_subscription_and_debts_v2.py. The known stripe status 500 is a library-level routing inconsistency — emergentintegrations.create_checkout_session uses Emergent proxy host but get_checkout_status hits api.stripe.com directly. Webhook path is unaffected. Frontend testids: nav-settings, profile-name-input, profile-email-input, save-profile-btn, subscription-section, plan-monthly, plan-annual, plan-monthly-cta, plan-annual-cta, plan-annual-badge, debt-due (calendar popover trigger), debt-due-popover, free-limit-banner, simulator-locked, simulator-upgrade-btn. After clicking plan-monthly-cta the page navigates away to checkout.stripe.com — capture page.url before the redirect or listen for 'request' events with stripe.com substring.",
+  "rca_of_the_issue": "Stripe status 500 RCA: in /app/backend/server.py the StripeCheckout client is constructed with api_key='sk_test_emergent' and a webhook_url. Inside emergentintegrations, create_checkout_session targets the Emergent proxy (https://integrations.emergentagent.com/stripe/v1) which creates a session in a sandbox account, returning a session_id like cs_test_a1U28DG1.... However get_checkout_status uses the underlying `stripe` SDK against api.stripe.com which has no such session, raising 'No such checkout.session'. Reproduction: POST /api/subscription/checkout {package_id:'monthly', origin_url:BASE_URL} then immediately GET /api/subscription/status/{returned_session_id} -> 500. Mitigation: wrap the call in try/except CheckoutError and return {payment_status:'unpaid', status:'open', amount_total: int(txn['amount']*100), currency: txn['currency']} so the frontend polling loop on /settings can continue without crashing; rely on the webhook to grant premium once payment completes."
+}

@@ -18,6 +18,10 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depend
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionRequest,
+)
 
 # ============================================================
 # Setup
@@ -48,6 +52,35 @@ class UserPublic(BaseModel):
     picture: Optional[str] = None
     auth_provider: str = "email"
     role: str = "user"
+    premium_until: Optional[str] = None
+    plan: Optional[str] = None  # "monthly" | "annual" | None
+
+
+class SubscriptionCheckoutPayload(BaseModel):
+    package_id: Literal["monthly", "annual"]
+    origin_url: str
+
+
+SUBSCRIPTION_PACKAGES = {
+    "monthly": {"amount": 5.00, "currency": "usd", "days": 30, "label": "Monthly"},
+    "annual": {"amount": 50.00, "currency": "usd", "days": 365, "label": "Annual"},
+}
+
+FREE_DEBT_LIMIT = 3
+
+
+def is_premium(user: dict) -> bool:
+    pu = user.get("premium_until")
+    if not pu:
+        return False
+    if isinstance(pu, str):
+        try:
+            pu = datetime.fromisoformat(pu)
+        except ValueError:
+            return False
+    if pu.tzinfo is None:
+        pu = pu.replace(tzinfo=timezone.utc)
+    return pu > datetime.now(timezone.utc)
 
 
 class RegisterPayload(BaseModel):
@@ -74,7 +107,7 @@ class DebtPayload(BaseModel):
     balance: float = Field(gt=0)
     apr: float = Field(ge=0, le=100)
     min_payment: float = Field(ge=0)
-    due_day: Optional[int] = Field(default=None, ge=1, le=31)
+    due_date: Optional[str] = Field(default=None, description="ISO date YYYY-MM-DD")
 
 
 class Debt(DebtPayload):
@@ -314,6 +347,13 @@ async def list_debts(user: dict = Depends(get_current_user)) -> List[dict]:
 
 @api_router.post("/debts")
 async def create_debt(payload: DebtPayload, user: dict = Depends(get_current_user)):
+    if not is_premium(user):
+        count = await db.debts.count_documents({"user_id": user["user_id"]})
+        if count >= FREE_DEBT_LIMIT:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Free plan is limited to {FREE_DEBT_LIMIT} debts. Upgrade to Premium for unlimited debts.",
+            )
     debt = {
         "debt_id": f"debt_{uuid.uuid4().hex[:12]}",
         "user_id": user["user_id"],
@@ -461,23 +501,37 @@ async def compare_strategies(extra_payment: float = 0, user: dict = Depends(get_
 @api_router.get("/reminders/upcoming")
 async def upcoming_reminders(user: dict = Depends(get_current_user)):
     debts = await db.debts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(length=1000)
-    today = datetime.now(timezone.utc)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     reminders = []
     for d in debts:
-        if not d.get("due_day"):
+        # Prefer new due_date (YYYY-MM-DD). Fallback to legacy due_day.
+        due_day = None
+        due_iso = d.get("due_date")
+        if due_iso:
+            try:
+                parsed = datetime.fromisoformat(due_iso).replace(tzinfo=timezone.utc)
+                due_day = parsed.day
+            except ValueError:
+                due_day = None
+        if due_day is None and d.get("due_day"):
+            due_day = int(d["due_day"])
+        if not due_day:
             continue
-        # Compute next due date
+
         year, month = today.year, today.month
-        due_day = min(d["due_day"], 28)
-        try:
-            due = today.replace(year=year, month=month, day=due_day, hour=0, minute=0, second=0, microsecond=0)
-        except ValueError:
-            continue
+        # Clamp to last valid day of month (handle Feb / 30-day months)
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        target_day = min(due_day, last_day)
+        due = today.replace(year=year, month=month, day=target_day)
         if due < today:
             if month == 12:
-                due = due.replace(year=year + 1, month=1)
+                year, month = year + 1, 1
             else:
-                due = due.replace(month=month + 1)
+                month += 1
+            last_day = calendar.monthrange(year, month)[1]
+            target_day = min(due_day, last_day)
+            due = today.replace(year=year, month=month, day=target_day)
         days_until = (due - today).days
         reminders.append({
             "debt_id": d["debt_id"],
@@ -489,6 +543,217 @@ async def upcoming_reminders(user: dict = Depends(get_current_user)):
         })
     reminders.sort(key=lambda x: x["days_until"])
     return reminders
+
+
+# ============================================================
+# Subscription / Stripe
+# ============================================================
+class ProfileUpdatePayload(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+
+
+@api_router.put("/profile")
+async def update_profile(payload: ProfileUpdatePayload, user: dict = Depends(get_current_user)):
+    updates = {}
+    if payload.name is not None:
+        updates["name"] = payload.name
+    if updates:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": updates})
+    refreshed = await db.users.find_one(
+        {"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0}
+    )
+    return UserPublic(**refreshed).model_dump()
+
+
+@api_router.get("/subscription/plans")
+async def subscription_plans():
+    return {
+        "monthly": {"amount": 5.00, "currency": "usd", "label": "Monthly", "interval": "month"},
+        "annual": {"amount": 50.00, "currency": "usd", "label": "Annual", "interval": "year"},
+    }
+
+
+@api_router.get("/subscription/me")
+async def my_subscription(user: dict = Depends(get_current_user)):
+    return {
+        "premium": is_premium(user),
+        "premium_until": user.get("premium_until"),
+        "plan": user.get("plan"),
+        "debt_limit_free": FREE_DEBT_LIMIT,
+    }
+
+
+def _stripe_client(request: Request) -> StripeCheckout:
+    api_key = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
+    host_url = str(request.base_url)
+    webhook_url = f"{host_url.rstrip('/')}/api/webhook/stripe"
+    return StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+
+
+@api_router.post("/subscription/checkout")
+async def subscription_checkout(
+    payload: SubscriptionCheckoutPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    pkg = SUBSCRIPTION_PACKAGES.get(payload.package_id)
+    if not pkg:
+        raise HTTPException(status_code=400, detail="Invalid package")
+
+    origin = payload.origin_url.rstrip("/")
+    success_url = f"{origin}/settings?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/settings?subscription=cancelled"
+
+    sc = _stripe_client(request)
+    req = CheckoutSessionRequest(
+        amount=pkg["amount"],
+        currency=pkg["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "user_id": user["user_id"],
+            "email": user["email"],
+            "package_id": payload.package_id,
+            "days": str(pkg["days"]),
+        },
+    )
+    session = await sc.create_checkout_session(req)
+
+    await db.payment_transactions.insert_one(
+        {
+            "session_id": session.session_id,
+            "user_id": user["user_id"],
+            "email": user["email"],
+            "package_id": payload.package_id,
+            "amount": pkg["amount"],
+            "currency": pkg["currency"],
+            "days": pkg["days"],
+            "payment_status": "initiated",
+            "status": "open",
+            "metadata": req.metadata,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api_router.get("/subscription/status/{session_id}")
+async def subscription_status(
+    session_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    txn = await db.payment_transactions.find_one(
+        {"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    # If already processed, just return current state
+    if txn.get("payment_status") == "paid" and txn.get("granted"):
+        return {
+            "payment_status": "paid",
+            "status": txn.get("status", "complete"),
+            "amount_total": int(txn["amount"] * 100),
+            "currency": txn["currency"],
+        }
+
+    sc = _stripe_client(request)
+    status = await sc.get_checkout_status(session_id)
+
+    update = {
+        "payment_status": status.payment_status,
+        "status": status.status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if status.payment_status == "paid" and not txn.get("granted"):
+        # Grant premium
+        days = int(txn.get("days", 30))
+        current_user = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+        existing_until = current_user.get("premium_until") if current_user else None
+        base = datetime.now(timezone.utc)
+        if existing_until:
+            try:
+                existing_dt = datetime.fromisoformat(existing_until)
+                if existing_dt.tzinfo is None:
+                    existing_dt = existing_dt.replace(tzinfo=timezone.utc)
+                if existing_dt > base:
+                    base = existing_dt
+            except ValueError:
+                pass
+        new_until = (base + timedelta(days=days)).isoformat()
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"premium_until": new_until, "plan": txn["package_id"]}},
+        )
+        update["granted"] = True
+        update["granted_at"] = datetime.now(timezone.utc).isoformat()
+
+    await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
+
+    return {
+        "payment_status": status.payment_status,
+        "status": status.status,
+        "amount_total": status.amount_total,
+        "currency": status.currency,
+    }
+
+
+@api_router.post("/subscription/cancel")
+async def cancel_subscription(user: dict = Depends(get_current_user)):
+    """Cancel auto-renewal. The user keeps premium until premium_until expires."""
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"plan": None}},
+    )
+    return {"ok": True, "premium_until": user.get("premium_until")}
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    signature = request.headers.get("Stripe-Signature", "")
+    sc = _stripe_client(request)
+    try:
+        evt = await sc.handle_webhook(body, signature)
+    except Exception as e:
+        logger.warning(f"Stripe webhook error: {e}")
+        return {"received": True}
+
+    txn = await db.payment_transactions.find_one({"session_id": evt.session_id}, {"_id": 0})
+    if not txn:
+        return {"received": True}
+
+    update = {
+        "payment_status": evt.payment_status,
+        "webhook_event_type": evt.event_type,
+        "webhook_event_id": evt.event_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if evt.payment_status == "paid" and not txn.get("granted"):
+        days = int(txn.get("days", 30))
+        user = await db.users.find_one({"user_id": txn["user_id"]}, {"_id": 0})
+        existing_until = user.get("premium_until") if user else None
+        base = datetime.now(timezone.utc)
+        if existing_until:
+            try:
+                existing_dt = datetime.fromisoformat(existing_until)
+                if existing_dt.tzinfo is None:
+                    existing_dt = existing_dt.replace(tzinfo=timezone.utc)
+                if existing_dt > base:
+                    base = existing_dt
+            except ValueError:
+                pass
+        new_until = (base + timedelta(days=days)).isoformat()
+        await db.users.update_one(
+            {"user_id": txn["user_id"]},
+            {"$set": {"premium_until": new_until, "plan": txn["package_id"]}},
+        )
+        update["granted"] = True
+        update["granted_at"] = datetime.now(timezone.utc).isoformat()
+
+    await db.payment_transactions.update_one({"session_id": evt.session_id}, {"$set": update})
+    return {"received": True}
 
 
 # ============================================================
@@ -505,6 +770,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=[FRONTEND_URL, "http://localhost:3000"],
+    allow_origin_regex=r"https://.*\.(preview\.emergentagent\.com|emergent\.host|emergentagent\.com)",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -520,6 +786,8 @@ async def startup():
     await db.debts.create_index("user_id")
     await db.user_sessions.create_index("session_token", unique=True)
     await db.login_attempts.create_index("identifier")
+    await db.payment_transactions.create_index("session_id", unique=True)
+    await db.payment_transactions.create_index("user_id")
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@debtwise.app").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")

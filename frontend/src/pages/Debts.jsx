@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { api, fmtMoney, formatApiErrorDetail } from "../lib/api";
 import { DEBT_TYPES, debtTypeMeta } from "../lib/constants";
-import { Plus, Pencil, Trash2, Wallet, X } from "lucide-react";
+import { Plus, Pencil, Trash2, Wallet, CalendarIcon, Lock } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { useAuth } from "../contexts/AuthContext";
 import {
   Dialog,
   DialogContent,
@@ -10,6 +12,8 @@ import {
   DialogTitle,
   DialogDescription,
 } from "../components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import { Calendar } from "../components/ui/calendar";
 
 const empty = {
   name: "",
@@ -17,8 +21,26 @@ const empty = {
   balance: "",
   apr: "",
   min_payment: "",
-  due_day: "",
+  due_date: "",
 };
+
+function formatMMDDYY(isoDate) {
+  if (!isoDate) return "";
+  const d = new Date(isoDate + "T00:00:00");
+  if (isNaN(d.getTime())) return "";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${mm}/${dd}/${yy}`;
+}
+
+function toISO(date) {
+  if (!date) return "";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 export default function Debts() {
   const [debts, setDebts] = useState([]);
@@ -28,6 +50,10 @@ export default function Debts() {
   const [form, setForm] = useState(empty);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [dateOpen, setDateOpen] = useState(false);
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const isPremium = !!(user && user.premium_until && new Date(user.premium_until) > new Date());
 
   const load = async () => {
     setLoading(true);
@@ -44,6 +70,11 @@ export default function Debts() {
   }, []);
 
   const openAdd = () => {
+    if (!isPremium && debts.length >= 3) {
+      toast.info("Free plan is limited to 3 debts. Upgrade to Premium for unlimited.");
+      navigate("/settings?upgrade=1");
+      return;
+    }
     setEditing(null);
     setForm(empty);
     setError("");
@@ -58,7 +89,7 @@ export default function Debts() {
       balance: String(d.balance),
       apr: String(d.apr),
       min_payment: String(d.min_payment),
-      due_day: d.due_day ? String(d.due_day) : "",
+      due_date: d.due_date || "",
     });
     setError("");
     setOpen(true);
@@ -74,7 +105,7 @@ export default function Debts() {
       balance: parseFloat(form.balance),
       apr: parseFloat(form.apr),
       min_payment: parseFloat(form.min_payment),
-      due_day: form.due_day ? parseInt(form.due_day, 10) : null,
+      due_date: form.due_date || null,
     };
     try {
       if (editing) {
@@ -87,7 +118,12 @@ export default function Debts() {
       setOpen(false);
       await load();
     } catch (e) {
-      setError(formatApiErrorDetail(e.response?.data?.detail) || e.message);
+      if (e.response?.status === 402) {
+        setError(formatApiErrorDetail(e.response?.data?.detail));
+        toast.info("Upgrade to Premium for unlimited debts.");
+      } else {
+        setError(formatApiErrorDetail(e.response?.data?.detail) || e.message);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -131,7 +167,31 @@ export default function Debts() {
           <p className="text-slate-400 text-sm">Add your first debt to start planning.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+        <>
+          {!isPremium && debts.length >= 3 && (
+            <div
+              className="glass rounded-xl p-4 mb-5 flex items-center gap-3 border-amber-500/20"
+              data-testid="free-limit-banner"
+            >
+              <div className="w-9 h-9 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+                <Lock className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium">Free plan limit reached</p>
+                <p className="text-xs text-slate-400">
+                  Upgrade to Premium to track unlimited debts and unlock the Simulator.
+                </p>
+              </div>
+              <button
+                onClick={() => navigate("/settings?upgrade=1")}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium px-4 py-2 rounded-lg shrink-0"
+                data-testid="banner-upgrade-btn"
+              >
+                Upgrade
+              </button>
+            </div>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {debts.map((d) => {
             const meta = debtTypeMeta(d.type);
             return (
@@ -189,7 +249,7 @@ export default function Debts() {
                   <div>
                     <p className="text-slate-500 mb-1">Due</p>
                     <p className="text-slate-200 font-medium">
-                      {d.due_day ? `Day ${d.due_day}` : "—"}
+                      {d.due_date ? formatMMDDYY(d.due_date) : d.due_day ? `Day ${d.due_day}` : "—"}
                     </p>
                   </div>
                 </div>
@@ -197,6 +257,7 @@ export default function Debts() {
             );
           })}
         </div>
+        </>
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -272,16 +333,55 @@ export default function Debts() {
                 testid="debt-min"
                 required
               />
-              <Field
-                label="Due day (1–28)"
-                type="number"
-                min="1"
-                max="28"
-                value={form.due_day}
-                onChange={(v) => setForm({ ...form, due_day: v })}
-                placeholder="15"
-                testid="debt-due"
-              />
+              <div>
+                <label className="text-xs text-slate-400 tracking-widest uppercase block mb-2">
+                  Due date
+                </label>
+                <Popover open={dateOpen} onOpenChange={setDateOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-left flex items-center justify-between hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      data-testid="debt-due"
+                    >
+                      <span className={form.due_date ? "text-slate-100" : "text-slate-500"}>
+                        {form.due_date ? formatMMDDYY(form.due_date) : "MM/DD/YY"}
+                      </span>
+                      <CalendarIcon className="w-4 h-4 text-slate-500" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    className="w-auto p-0 glass-strong border border-white/10"
+                    align="start"
+                    data-testid="debt-due-popover"
+                  >
+                    <Calendar
+                      mode="single"
+                      selected={form.due_date ? new Date(form.due_date + "T00:00:00") : undefined}
+                      onSelect={(date) => {
+                        setForm({ ...form, due_date: date ? toISO(date) : "" });
+                        setDateOpen(false);
+                      }}
+                      initialFocus
+                    />
+                    {form.due_date && (
+                      <div className="p-2 border-t border-white/10">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setForm({ ...form, due_date: "" });
+                            setDateOpen(false);
+                          }}
+                          className="w-full text-xs text-slate-400 hover:text-white py-1.5 rounded-md hover:bg-white/5"
+                          data-testid="debt-due-clear"
+                        >
+                          Clear date
+                        </button>
+                      </div>
+                    )}
+                  </PopoverContent>
+                </Popover>
+              </div>
             </div>
 
             {error && (

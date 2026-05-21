@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, fmtMoney } from "../lib/api";
 import { STRATEGIES, GlassTooltip } from "../lib/constants";
+import { useAuth } from "../contexts/AuthContext";
 import { Slider } from "../components/ui/slider";
 import {
   LineChart,
@@ -11,9 +13,12 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import { TrendingUp, Sparkles } from "lucide-react";
+import { TrendingUp, Sparkles, Lock, Crown } from "lucide-react";
 
 export default function Simulator() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const isPremium = !!(user && user.premium_until && new Date(user.premium_until) > new Date());
   const [extra, setExtra] = useState(0);
   const [strategy, setStrategy] = useState("avalanche");
   const [baseResult, setBaseResult] = useState(null);
@@ -21,6 +26,7 @@ export default function Simulator() {
   const [loading, setLoading] = useState(false);
 
   const compute = async (s, val) => {
+    if (!isPremium) return;
     setLoading(true);
     try {
       const [base, boosted] = await Promise.all([
@@ -37,7 +43,52 @@ export default function Simulator() {
   useEffect(() => {
     compute(strategy, extra);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategy]);
+  }, [strategy, isPremium]);
+
+  if (!isPremium) {
+    return (
+      <div data-testid="simulator-locked">
+        <div className="mb-10">
+          <p className="text-label mb-3">What if</p>
+          <h1 className="font-display text-4xl sm:text-5xl font-light tracking-tighter">
+            Extra payment simulator.
+          </h1>
+          <p className="text-slate-400 mt-2 text-sm max-w-2xl">
+            See how much faster — and cheaper — your debt disappears with extra monthly payments.
+          </p>
+        </div>
+        <div className="glass rounded-2xl p-12 text-center relative overflow-hidden">
+          <div
+            className="absolute inset-0 opacity-30 pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(circle at 50% 0%, rgba(37,99,235,0.25), transparent 70%)",
+            }}
+          />
+          <div className="relative z-10">
+            <div className="w-16 h-16 rounded-2xl glass-subtle flex items-center justify-center mx-auto mb-6 border-amber-500/30">
+              <Lock className="w-7 h-7 text-amber-400" />
+            </div>
+            <h3 className="font-display text-2xl font-medium tracking-tight mb-3">
+              Simulator is a Premium feature
+            </h3>
+            <p className="text-slate-400 mb-8 max-w-md mx-auto">
+              Upgrade to Premium ($5/month or $50/year) to unlock unlimited debts and the
+              extra-payment simulator.
+            </p>
+            <button
+              onClick={() => navigate("/settings?upgrade=1")}
+              className="bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-6 py-3 font-medium transition-all shadow-[0_0_30px_rgba(37,99,235,0.4)] inline-flex items-center gap-2"
+              data-testid="simulator-upgrade-btn"
+            >
+              <Crown className="w-4 h-4" />
+              Upgrade to Premium
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const interestSaved =
     baseResult && boostedResult

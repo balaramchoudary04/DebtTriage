@@ -7,6 +7,7 @@ import {
   Wallet,
   GitCompare,
   Calculator,
+  Settings as SettingsIcon,
   LogOut,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -16,6 +17,7 @@ const navItems = [
   { to: "/debts", label: "My Debts", icon: Wallet, testid: "nav-debts" },
   { to: "/strategies", label: "Strategies", icon: GitCompare, testid: "nav-strategies" },
   { to: "/simulator", label: "Simulator", icon: Calculator, testid: "nav-simulator" },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, testid: "nav-settings" },
 ];
 
 export default function AppLayout() {
