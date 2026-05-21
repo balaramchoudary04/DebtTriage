@@ -8,8 +8,9 @@ import os
 import uuid
 import logging
 import secrets
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Literal
+import asyncio
+from datetime import datetime, timezone, timedelta, date
+from typing import List, Optional, Literal, Dict
 
 import bcrypt
 import jwt
@@ -22,6 +23,8 @@ from emergentintegrations.payments.stripe.checkout import (
     StripeCheckout,
     CheckoutSessionRequest,
 )
+import resend
+from twilio.rest import Client as TwilioClient
 
 # ============================================================
 # Setup
@@ -54,6 +57,9 @@ class UserPublic(BaseModel):
     role: str = "user"
     premium_until: Optional[str] = None
     plan: Optional[str] = None  # "monthly" | "annual" | None
+    phone: Optional[str] = None
+    notify_email: bool = True
+    notify_sms: bool = False
 
 
 class SubscriptionCheckoutPayload(BaseModel):
@@ -107,7 +113,7 @@ class DebtPayload(BaseModel):
     balance: float = Field(gt=0)
     apr: float = Field(ge=0, le=100)
     min_payment: float = Field(ge=0)
-    due_date: Optional[str] = Field(default=None, description="ISO date YYYY-MM-DD")
+    due_date: Optional[date] = Field(default=None, description="Calendar date")
 
 
 class Debt(DebtPayload):
@@ -120,6 +126,7 @@ class StrategyRequest(BaseModel):
     strategy: Literal["avalanche", "snowball", "highest_payment", "custom"]
     extra_payment: float = Field(default=0, ge=0)
     custom_order: Optional[List[str]] = None  # list of debt_ids in priority
+    per_debt_extra: Optional[Dict[str, float]] = None  # debt_id -> extra $/mo
 
 
 # ============================================================
@@ -358,7 +365,7 @@ async def create_debt(payload: DebtPayload, user: dict = Depends(get_current_use
         "debt_id": f"debt_{uuid.uuid4().hex[:12]}",
         "user_id": user["user_id"],
         "created_at": datetime.now(timezone.utc).isoformat(),
-        **payload.model_dump(),
+        **payload.model_dump(mode="json"),
     }
     await db.debts.insert_one(debt)
     debt.pop("_id", None)
@@ -369,7 +376,7 @@ async def create_debt(payload: DebtPayload, user: dict = Depends(get_current_use
 async def update_debt(debt_id: str, payload: DebtPayload, user: dict = Depends(get_current_user)):
     res = await db.debts.update_one(
         {"debt_id": debt_id, "user_id": user["user_id"]},
-        {"$set": payload.model_dump()},
+        {"$set": payload.model_dump(mode="json")},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Debt not found")
@@ -388,9 +395,16 @@ async def delete_debt(debt_id: str, user: dict = Depends(get_current_user)):
 # ============================================================
 # Strategy Engine
 # ============================================================
-def simulate_strategy(debts: List[dict], strategy: str, extra_payment: float, custom_order: Optional[List[str]] = None):
+def simulate_strategy(
+    debts: List[dict],
+    strategy: str,
+    extra_payment: float,
+    custom_order: Optional[List[str]] = None,
+    per_debt_extra: Optional[Dict[str, float]] = None,
+):
     """Simulate month-by-month payoff. Returns schedule & summary."""
     debts = [dict(d) for d in debts if d["balance"] > 0]
+    per_debt_extra = per_debt_extra or {}
     if not debts:
         return {"months": 0, "total_interest": 0.0, "total_paid": 0.0, "payoff_date": None, "schedule": [], "per_debt": []}
 
@@ -422,15 +436,17 @@ def simulate_strategy(debts: List[dict], strategy: str, extra_payment: float, cu
                 s["remaining"] += interest
                 s["interest_total"] += interest
 
-        # Pay minimums
+        # Pay minimums + per-debt extra overrides
         pool = extra_payment
         for s in state.values():
             if s["remaining"] > 0:
-                pay = min(s["min_payment"], s["remaining"])
+                base = s["min_payment"] + float(per_debt_extra.get(s["debt_id"], 0) or 0)
+                pay = min(base, s["remaining"])
                 s["remaining"] -= pay
                 s["paid_total"] += pay
             else:
-                pool += s["min_payment"]  # freed minimum rolls into pool (snowball effect)
+                # freed minimum + freed per-debt-extra rolls into pool (snowball effect)
+                pool += s["min_payment"] + float(per_debt_extra.get(s["debt_id"], 0) or 0)
 
         # Apply extra/freed funds in priority order
         for s in priority_order():
@@ -480,7 +496,9 @@ def simulate_strategy(debts: List[dict], strategy: str, extra_payment: float, cu
 @api_router.post("/strategies/calculate")
 async def calculate_strategy(req: StrategyRequest, user: dict = Depends(get_current_user)):
     debts = await db.debts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(length=1000)
-    result = simulate_strategy(debts, req.strategy, req.extra_payment, req.custom_order)
+    result = simulate_strategy(
+        debts, req.strategy, req.extra_payment, req.custom_order, req.per_debt_extra
+    )
     result["strategy"] = req.strategy
     result["extra_payment"] = req.extra_payment
     return result
@@ -546,10 +564,194 @@ async def upcoming_reminders(user: dict = Depends(get_current_user)):
 
 
 # ============================================================
+# Notification helpers (no-op if keys missing)
+# ============================================================
+def email_enabled() -> bool:
+    return bool(os.environ.get("RESEND_API_KEY"))
+
+
+def sms_enabled() -> bool:
+    return bool(
+        os.environ.get("TWILIO_ACCOUNT_SID")
+        and os.environ.get("TWILIO_AUTH_TOKEN")
+        and os.environ.get("TWILIO_FROM")
+    )
+
+
+async def send_email_async(to: str, subject: str, html: str, text: Optional[str] = None) -> dict:
+    if not email_enabled():
+        logger.info(f"[email no-op] would send to {to}: {subject}")
+        return {"sent": False, "reason": "RESEND_API_KEY not configured"}
+    resend.api_key = os.environ["RESEND_API_KEY"]
+    sender = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+    params = {"from": sender, "to": [to], "subject": subject, "html": html}
+    if text:
+        params["text"] = text
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"sent": True, "id": result.get("id") if isinstance(result, dict) else None}
+    except Exception as e:
+        logger.warning(f"Email send failed to {to}: {e}")
+        return {"sent": False, "reason": str(e)}
+
+
+async def send_sms_async(to: str, body: str) -> dict:
+    if not sms_enabled():
+        logger.info(f"[sms no-op] would send to {to}: {body[:60]}…")
+        return {"sent": False, "reason": "Twilio not configured"}
+    try:
+        twilio = TwilioClient(
+            os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]
+        )
+        msg = await asyncio.to_thread(
+            lambda: twilio.messages.create(
+                to=to, from_=os.environ["TWILIO_FROM"], body=body
+            )
+        )
+        return {"sent": True, "sid": msg.sid}
+    except Exception as e:
+        logger.warning(f"SMS send failed to {to}: {e}")
+        return {"sent": False, "reason": str(e)}
+
+
+def _reminder_html(name: str, debt_name: str, amount: float, due_iso: str, days: int) -> str:
+    when = "due today" if days == 0 else f"due in {days} day{'s' if days != 1 else ''}"
+    return f"""<!doctype html>
+<html><body style="font-family:Arial,sans-serif;background:#020617;color:#f8fafc;padding:24px;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#0f172a;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:32px;">
+    <tr><td>
+      <h1 style="font-size:22px;margin:0 0 8px 0;font-weight:500;letter-spacing:-0.02em;">Payment reminder</h1>
+      <p style="color:#94a3b8;margin:0 0 24px 0;font-size:14px;">Hi {name}, your payment is {when}.</p>
+      <table width="100%" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:16px;">
+        <tr><td style="padding:6px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.15em;">Debt</td><td style="padding:6px 0;text-align:right;color:#f8fafc;">{debt_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.15em;">Amount due</td><td style="padding:6px 0;text-align:right;color:#f8fafc;font-weight:600;">${amount:,.2f}</td></tr>
+        <tr><td style="padding:6px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.15em;">Due date</td><td style="padding:6px 0;text-align:right;color:#f8fafc;">{due_iso}</td></tr>
+      </table>
+      <p style="color:#64748b;margin:24px 0 0;font-size:12px;">— DebtWise. You can manage reminders in your account settings.</p>
+    </td></tr>
+  </table>
+</body></html>"""
+
+
+def _reminder_sms(debt_name: str, amount: float, days: int) -> str:
+    when = "today" if days == 0 else f"in {days}d"
+    return f"DebtWise: {debt_name} payment of ${amount:,.0f} is due {when}. Reply STOP to opt out."
+
+
+async def run_reminder_job():
+    """Daily reminder job: emails/SMS for debts due in 0 or 3 days."""
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).date()
+    targets = [today, today + timedelta(days=3)]
+    cursor = db.debts.find({}, {"_id": 0})
+    async for d in cursor:
+        due_iso = d.get("due_date")
+        if not due_iso:
+            continue
+        try:
+            if isinstance(due_iso, str):
+                due_parsed = datetime.fromisoformat(due_iso).date()
+            else:
+                due_parsed = due_iso
+        except ValueError:
+            continue
+        # Re-anchor to current month using day component (recurring reminders)
+        import calendar
+        for target in targets:
+            last_day = calendar.monthrange(target.year, target.month)[1]
+            recurring = target.replace(day=min(due_parsed.day, last_day))
+            if recurring != target:
+                continue
+            days_until = (recurring - today).days
+            if days_until not in (0, 3):
+                continue
+            user = await db.users.find_one({"user_id": d["user_id"]}, {"_id": 0, "password_hash": 0})
+            if not user:
+                continue
+            # Dedupe: one notification per (debt, due, days_until)
+            log_key = f"{d['debt_id']}:{recurring.isoformat()}:{days_until}"
+            existing = await db.reminder_log.find_one({"key": log_key}, {"_id": 0})
+            if existing:
+                continue
+
+            actions = []
+            if user.get("notify_email", True) and user.get("email"):
+                r = await send_email_async(
+                    user["email"],
+                    f"Payment reminder: {d['name']} due in {days_until}d" if days_until else f"Payment due today: {d['name']}",
+                    _reminder_html(user.get("name", "there"), d["name"], d["min_payment"], recurring.isoformat(), days_until),
+                )
+                actions.append({"channel": "email", **r})
+            if user.get("notify_sms", False) and user.get("phone"):
+                r = await send_sms_async(user["phone"], _reminder_sms(d["name"], d["min_payment"], days_until))
+                actions.append({"channel": "sms", **r})
+
+            await db.reminder_log.insert_one(
+                {
+                    "key": log_key,
+                    "user_id": user["user_id"],
+                    "debt_id": d["debt_id"],
+                    "due_date": recurring.isoformat(),
+                    "days_until": days_until,
+                    "actions": actions,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+
+async def reminder_loop():
+    """Wake up periodically and run the reminder job once per UTC day."""
+    last_run_day = None
+    while True:
+        try:
+            today = datetime.now(timezone.utc).date()
+            if last_run_day != today:
+                logger.info(f"Running reminder job for {today}")
+                await run_reminder_job()
+                last_run_day = today
+        except Exception as e:
+            logger.warning(f"Reminder loop error: {e}")
+        await asyncio.sleep(3600)  # check hourly
+
+
+@api_router.post("/reminders/test")
+async def test_reminder(user: dict = Depends(get_current_user)):
+    """Send a test email + SMS to the current user. Skips channels with missing keys."""
+    name = user.get("name", "there")
+    sample_due = (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat()
+    actions = {"email": None, "sms": None}
+    if user.get("notify_email", True) and user.get("email"):
+        actions["email"] = await send_email_async(
+            user["email"],
+            "DebtWise test reminder",
+            _reminder_html(name, "Sample Card", 150.0, sample_due, 3),
+            "DebtWise test reminder. If you see this, your email notifications are working.",
+        )
+    else:
+        actions["email"] = {"sent": False, "reason": "Email notifications disabled or no email"}
+
+    if user.get("notify_sms", False) and user.get("phone"):
+        actions["sms"] = await send_sms_async(
+            user["phone"],
+            _reminder_sms("Sample Card", 150.0, 3),
+        )
+    else:
+        actions["sms"] = {"sent": False, "reason": "SMS disabled or no phone on file"}
+
+    return {
+        "email_configured": email_enabled(),
+        "sms_configured": sms_enabled(),
+        "actions": actions,
+    }
+
+
+# ============================================================
 # Subscription / Stripe
 # ============================================================
 class ProfileUpdatePayload(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    phone: Optional[str] = Field(default=None, max_length=20)
+    notify_email: Optional[bool] = None
+    notify_sms: Optional[bool] = None
 
 
 @api_router.put("/profile")
@@ -557,6 +759,14 @@ async def update_profile(payload: ProfileUpdatePayload, user: dict = Depends(get
     updates = {}
     if payload.name is not None:
         updates["name"] = payload.name
+    if payload.phone is not None:
+        # Normalize: keep only + and digits
+        cleaned = "".join(ch for ch in payload.phone if ch == "+" or ch.isdigit())
+        updates["phone"] = cleaned or None
+    if payload.notify_email is not None:
+        updates["notify_email"] = payload.notify_email
+    if payload.notify_sms is not None:
+        updates["notify_sms"] = payload.notify_sms
     if updates:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": updates})
     refreshed = await db.users.find_one(
@@ -800,6 +1010,7 @@ async def startup():
     await db.login_attempts.create_index("identifier")
     await db.payment_transactions.create_index("session_id", unique=True)
     await db.payment_transactions.create_index("user_id")
+    await db.reminder_log.create_index("key", unique=True)
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@debtwise.app").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
@@ -842,6 +1053,8 @@ async def startup():
 """
     )
     logger.info("Startup complete.")
+    # Start daily reminder loop
+    asyncio.create_task(reminder_loop())
 
 
 @app.on_event("shutdown")

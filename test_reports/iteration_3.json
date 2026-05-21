@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 3 — DebtWise reminders + custom strategy + settings extras. Backend: 9/9 new iter3 pytest tests PASS (test_iter3_reminders_custom.py). Full backend suite 45/47 pass; 2 failures are pre-existing iter2 issues (stale due_day fixture + Stripe status polling routing). Frontend: ALL 7 requested flows verified end-to-end on https://payoff-planner-26.preview.emergentagent.com — Settings phone field saves & normalizes, notifications-section toggles work + show toast, test-reminder-btn returns no-op gracefully (no 500), /strategies shows the 'custom' card and routes to /strategies/custom, demo (free) sees custom-locked + custom-upgrade-btn, and after temporarily flipping premium in mongo the drag-and-drop UI renders all sortable-row-{id}, drag-handle-{id}, extra-input-{id} rows plus a payoff chart in custom-chart. Demo user restored to free tier (premium_until + plan unset) after testing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/subscription/status/{session_id}",
+        "issue": "Pre-existing iter2 issue: still returns the DB-cached 'initiated' state on first poll (the soft-fail fallback added after iter2 works — no 500 — but the existing test_subscription_and_debts_v2.py::test_checkout_monthly_returns_stripe_url asserts payment_status in ('unpaid','paid','no_payment_required'). Either the fallback should map to 'unpaid' or the assertion list should include 'initiated'."
+      },
+      {
+        "endpoint": "/api/debts (legacy due_day in test_debtwise_api.py)",
+        "issue": "Pre-existing iter2 stale fixture: test_upcoming_returns_sorted seeds with due_day which DebtPayload now ignores. Carryover from iter2 report, not a new regression."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/strategies/custom (premium)", "issues": ["Recharts emits a width(-1)/height(-1) console warning on first render (cosmetic, chart still renders correctly after debounce). Could be silenced by giving ResponsiveContainer an explicit minHeight."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter3_reminders_custom.py",
+    "/app/backend/tests/test_subscription_and_debts_v2.py",
+    "/app/backend/tests/test_debtwise_api.py",
+    "/app/test_reports/pytest/pytest_iter3.xml",
+    "/app/test_reports/pytest/pytest_iter3_full.xml"
+  ],
+  "action_items": [
+    "LOW: Either update /api/subscription/status/{session_id} to coerce the DB-cached 'initiated' status to 'unpaid' in the soft-fail branch, OR loosen the assertion in test_subscription_and_debts_v2.py to include 'initiated'. The endpoint correctly avoids 500 now — this is just a test/contract mismatch.",
+    "LOW: Update the stale iter1 fixture in test_debtwise_api.py::TestReminders::test_upcoming_returns_sorted to use due_date (YYYY-MM-DD) instead of legacy due_day so it exercises the current code path.",
+    "LOW: Pin Recharts ResponsiveContainer minHeight on /strategies/custom to suppress 'width(-1) height(-1)' console warning during initial mount."
+  ],
+  "critical_code_review_comments": [
+    "DebtPayload.due_date is now `Optional[date]` with Pydantic — invalid calendar dates like 2026-02-31 are correctly rejected with 422. Good fix from iter2.",
+    "POST/PUT /api/debts use payload.model_dump(mode='json') so the date round-trips as 'YYYY-MM-DD' string in responses. Correct.",
+    "send_email_async / send_sms_async correctly no-op when keys missing and return {sent:False, reason:'...'}; they catch broad exceptions so a bad key won't crash the reminder loop. Good defensive coding.",
+    "reminder_loop wraps run_reminder_job in try/except and sleeps 3600s — safe. Dedupe via reminder_log unique 'key' index also prevents duplicate sends.",
+    "simulate_strategy correctly threads per_debt_extra into the per-debt minimum-pay phase AND rolls freed per_debt_extra back into the pool after payoff. Verified: applying $50 per_debt_extra on demo's first debt yields fewer months than baseline (per test test_custom_with_per_debt_extra_differs).",
+    "ProfileUpdatePayload phone normalization keeps only '+' and digits and falls back to None on empty string. Correct.",
+    "POST /api/reminders/test correctly returns email_configured/sms_configured + per-channel actions with reason; never 500s with empty keys (verified).",
+    "server.py is now ~1063 lines. Strongly recommend splitting into routers (auth.py, debts.py, strategies.py, reminders.py, subscription.py) before adding more features.",
+    "StrategyRequest.custom_order is Optional[List[str]] — endpoint silently accepts strategy='custom' with custom_order=None. Consider 422'ing that combo, or document that empty/missing custom_order falls back to insertion order.",
+    "reminder loop logs '[email no-op] would send to ...' at INFO for every debt every day — high-volume noise if many users. Consider DEBUG level."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter3_reminders_custom.py (created)"
+  ],
+  "success_rate": {"backend": "100% (9/9 new iter3 tests); full suite 95.7% (45/47, 2 pre-existing iter2 issues)", "frontend": "100% on all 7 requested flows"},
+  "test_credentials": "demo@debtwise.app / Demo@1234 (free tier, 3 seeded debts). admin@debtwise.app / Admin@123.",
+  "seed_data_creation": "iter3 pytest creates throwaway users test_<uuid>@example.com / Passw0rd! and TEST_-prefixed debts on them. The demo user's phone was changed to +15552223333 during UI test (cosmetic, can be reverted via Settings UI). Demo user was temporarily made premium via mongo to test /strategies/custom DnD UI, then restored ($unset premium_until + plan) — confirmed back to free tier.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iter3 features verified. Testids of note for the new pages: notifications-section, toggle-email, toggle-email-switch, toggle-sms, toggle-sms-switch, profile-phone-input, test-reminder-btn, strategy-custom, strategy-custom-page, custom-locked, custom-upgrade-btn, dnd-list, sortable-row-{debt_id}, drag-handle-{debt_id}, extra-input-{debt_id}, custom-chart, custom-pool, back-to-strategies. To unlock /strategies/custom DnD in UI for demo user: `db.users.updateOne({email:'demo@debtwise.app'},{$set:{premium_until:'<future ISO>',plan:'monthly'}})` then `$unset` after. RESEND_API_KEY and TWILIO_* remain empty intentionally — no-op behavior is the contract.",
+  "rca_of_the_issue": "No new blocking issues. Both lingering failures are carryover from iter2: (1) /api/subscription/status returns DB-cached 'initiated' rather than 'unpaid' in the soft-fail branch — the iter2 fix correctly prevented 500s but didn't coerce the status string; (2) the iter1 reminder test still seeds legacy due_day which DebtPayload silently strips."
+}

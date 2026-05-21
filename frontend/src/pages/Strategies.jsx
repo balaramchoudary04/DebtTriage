@@ -125,8 +125,39 @@ export default function Strategies() {
       </div>
 
       {/* Strategy cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10">
-        {visible.map((s) => {
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5 mb-10">
+        {STRATEGIES.map((s) => {
+          if (s.key === "custom") {
+            return (
+              <button
+                key={s.key}
+                onClick={() => navigate("/strategies/custom")}
+                className="text-left glass rounded-2xl p-6 hover:bg-slate-800/50 hover:border-white/20 transition-all relative"
+                data-testid={`strategy-${s.key}`}
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ background: s.color, boxShadow: `0 0 8px ${s.color}` }}
+                  />
+                  <span className="text-label">{s.tagline}</span>
+                </div>
+                <h3 className="font-display text-2xl font-medium tracking-tight mb-2">
+                  {s.label}
+                </h3>
+                <p className="text-sm text-slate-400 mb-6">{s.desc}</p>
+                <div className="border-t border-white/5 pt-5 space-y-3">
+                  <p className="text-xs text-slate-500">
+                    Drag debts into your priority order, set per-debt extra payments, and simulate
+                    instantly.
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 text-xs text-blue-400 mt-5">
+                  Build your plan <ArrowRight className="w-3 h-3" />
+                </div>
+              </button>
+            );
+          }
           const r = strategies[s.key];
           const isBest = best?.key === s.key;
           return (

@@ -10,6 +10,7 @@ import Strategies from "./pages/Strategies";
 import StrategyDetail from "./pages/StrategyDetail";
 import Simulator from "./pages/Simulator";
 import Settings from "./pages/Settings";
+import StrategyCustom from "./pages/StrategyCustom";
 import AuthCallback from "./pages/AuthCallback";
 import AppLayout from "./components/AppLayout";
 
@@ -45,6 +46,7 @@ function AppRouter() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/debts" element={<Debts />} />
         <Route path="/strategies" element={<Strategies />} />
+        <Route path="/strategies/custom" element={<StrategyCustom />} />
         <Route path="/strategies/:strategy" element={<StrategyDetail />} />
         <Route path="/simulator" element={<Simulator />} />
         <Route path="/settings" element={<Settings />} />
