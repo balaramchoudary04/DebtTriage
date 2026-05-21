@@ -20,12 +20,14 @@
 - Behavior-driven payer who needs early wins (Snowball).
 - Cash-flow strapped user who needs to free monthly budget first (Highest Payment).
 
-## Implemented (2026-02-21)
+## Implemented (2026-02-21, updated 2026-02-21)
 - Auth: register/login/logout/me, JWT cookies, brute-force lockout, admin seeding, `/api/auth/session` for Emergent OAuth.
-- Debts CRUD (user-scoped) with 7 debt types.
+- Debts CRUD (user-scoped) with 7 debt types and `due_date` (YYYY-MM-DD, supports any day 1-31).
 - Strategy engine: month-by-month simulation for Avalanche, Snowball, Highest Payment, Custom with snowball roll-over of freed minimums, capped at 600 months.
 - `POST /api/strategies/calculate` + `POST /api/strategies/compare` + `GET /api/reminders/upcoming`.
-- Pages: Landing, Login (email + Google), Dashboard (4 metrics + donut + payoff line + strategy compare + reminders), Debts (CRUD dialog), Strategies (3-card compare + slider + 2 charts), StrategyDetail (timeline + per-debt amortization table), Simulator (baseline vs boosted line chart with interest/months saved).
+- Pages: Landing, Login (email + Google), Dashboard (4 metrics + donut + payoff line + strategy compare + reminders), Debts (CRUD dialog with mm/dd/yy calendar picker), Strategies (3-card compare + slider + 2 charts), StrategyDetail (timeline + per-debt amortization table), Simulator (premium-gated), Settings (profile + subscription + sign out).
+- Subscription (Stripe): $5/month and $50/year ("Save 17%" badge). Free tier limited to 3 debts (HTTP 402 with upgrade prompt). Premium unlocks unlimited debts + Simulator. Webhook + polling at `/api/subscription/status/{id}` with graceful fallback. Customer-facing cancel preserves access until `premium_until`.
+- CORS: `allow_origin_regex` matches any *.preview.emergentagent.com subdomain.
 - Mobile responsive layout with sticky top nav.
 - All interactive elements have `data-testid`.
 

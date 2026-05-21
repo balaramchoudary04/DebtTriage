@@ -658,7 +658,19 @@ async def subscription_status(
         }
 
     sc = _stripe_client(request)
-    status = await sc.get_checkout_status(session_id)
+    try:
+        status = await sc.get_checkout_status(session_id)
+    except Exception as e:
+        # Library/proxy inconsistency: create_checkout_session may route through
+        # the Emergent proxy while get_checkout_status hits api.stripe.com directly.
+        # Fail soft: return current DB state and let the webhook handle the grant.
+        logger.warning(f"Stripe status poll failed for {session_id}: {e}")
+        return {
+            "payment_status": txn.get("payment_status", "unpaid"),
+            "status": txn.get("status", "open"),
+            "amount_total": int(txn["amount"] * 100),
+            "currency": txn["currency"],
+        }
 
     update = {
         "payment_status": status.payment_status,
