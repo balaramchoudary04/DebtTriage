@@ -1,100 +1,48 @@
 # DebtWise
 
-DebtWise is a web application designed to help users track and pay off their personal debts (credit cards, student loans, mortgages, etc.) strategically. It simulates month-by-month payment schedules and compares payoff strategies like Avalanche and Snowball to show users the most cost-effective and fastest path to becoming debt-free.
+DebtWise is a strategic debt-payoff planner designed to help individuals organize credit cards, personal loans, auto loans, and mortgages, and determine the most cost-effective path to becoming debt-free. 
 
-This is a full-stack project built with a React frontend and a FastAPI backend, utilizing MongoDB for data persistence.
+Rather than just tracking balances, the application simulates month-by-month payment flows and compounding interest over time. It visually compares different financial optimization methodologies—allowing users to see exactly how much money and time they can save by altering their payment behaviors.
 
-## Features
+---
 
-- **Payoff Simulator**: Month-by-month calculations for:
-  - **Avalanche**: Targets the highest interest rate first to save the most money.
-  - **Snowball**: Targets the lowest balance first for quick psychological wins.
-  - **Highest Payment**: Prioritizes freeing up monthly cash flow.
-  - **Custom**: Allows manual ordering of debts and custom monthly extra payments.
-- **Interactive Dashboard**: Built with Recharts to show payoff timelines, debt breakdown, and total interest comparisons over time.
-- **Plaid Integration**: Links bank accounts to pull credit card and loan details (balances, APRs, and due dates) automatically.
-- **Stripe Subscriptions**: Payment flow handling monthly/annual premium plans, gated by webhook integration.
-- **Automated Reminders**: Background worker sending email (Resend API) and SMS (Twilio) payment alerts 3 days before and on the payment due date.
-- **Security**: Secure JWT-based cookie authentication and rate-limiting to prevent brute-force login attempts.
+## Core Payoff Strategy Engine
 
-## Tech Stack
+The heart of DebtWise is an async simulation engine that models month-by-month amortization schedules. When a user adds an extra monthly payment, the engine simulates how that money is distributed alongside standard minimums, and calculates the exact payoff month and total interest paid for four distinct strategies:
 
-- **Frontend**: React 19, React Router 7, Tailwind CSS, Radix UI, Recharts, Sonner.
-- **Backend**: FastAPI, MongoDB (Motor async driver), Pydantic v2.
-- **Integrations**: Plaid API, Stripe API, Resend, Twilio.
-- **Testing**: Pytest.
+1. **Debt Avalanche (Mathematical Optimization)**: Targets the debt with the highest interest rate (APR) first. This strategy is mathematically proven to minimize the total interest paid over the life of the debts.
+2. **Debt Snowball (Psychological Momentum)**: Targets the debt with the lowest remaining balance first. By clearing smaller debts quickly, it builds immediate psychological momentum and reduces the sheer number of open accounts.
+3. **Highest Payment (Cash Flow Relief)**: Targets the debt with the largest monthly minimum payment first. This strategy is designed to free up monthly cash flow as quickly as possible for cash-strapped users.
+4. **Custom Sequencing**: Allows users to manually drag-and-drop their debts into a custom payoff order, or configure specific extra monthly payments on a per-debt basis.
 
-## Project Structure
+### The "Snowball" Roll-over Effect
+Across all strategies, the engine automatically simulates the rollover effect: when a specific debt is fully paid off, its entire minimum payment (along with any custom extra payments allocated to it) is rolled into the payment pool for the next active debt in line, compounding the speed of the payoff.
 
-```text
-├── backend/
-│   ├── server.py              # API routes, middleware, and background reminder loop
-│   ├── requirements.txt       # Backend packages
-│   └── tests/                 # Pytest suite
-└── frontend/
-    ├── src/
-    │   ├── pages/             # Dashboard, Debts, Strategies, Settings, Simulator
-    │   ├── components/        # Layout and UI modules
-    │   └── App.js             # Routing and contexts
-    └── package.json           # Frontend packages
-```
+---
 
-## Setup & Installation
+## System Overview
 
-### Backend Setup
+* **Visual Dashboard**: Integrates interactive charts (built with Recharts) that map out the user's customized payoff timeline, showing the decline of total remaining balance month-by-month and a breakdown of debt categories.
+* **Plaid Account Syncing**: Links directly to financial institutions to securely import active credit card and loan accounts, capturing real-time balances, interest rates, and next payment due dates automatically.
+* **Subscription Management**: Integrates Stripe checkout and webhooks to manage premium accounts, granting users access to unlimited debt slots, custom payoff sequencing, and the interactive simulator.
+* **Background Reminders**: Runs a recurring daily worker that calculates upcoming payment due dates and sends automated email (via Resend) and SMS (via Twilio) alerts 3 days before and on the actual due date to prevent missed payments.
+* **Security & Lockout**: Implements secure HTTP-only JWT cookies for session management and a brute-force prevention system that locks out accounts/IPs after consecutive failed login attempts.
 
-1. Move into the backend directory and set up a virtual environment:
-   ```bash
-   cd backend
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-2. Install Python packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file in the `backend/` directory:
-   ```env
-   MONGO_URL=mongodb://localhost:27017
-   DB_NAME=debtwise
-   JWT_SECRET=your_secret_key
-   FRONTEND_URL=http://localhost:3000
+---
 
-   # Optional Integrations
-   PLAID_CLIENT_ID=your_id
-   PLAID_SECRET=your_secret
-   PLAID_ENV=sandbox
-   STRIPE_API_KEY=your_key
-   RESEND_API_KEY=your_key
-   SENDER_EMAIL=your_email
-   TWILIO_ACCOUNT_SID=your_sid
-   TWILIO_AUTH_TOKEN=your_token
-   TWILIO_FROM=your_number
-   ```
-4. Run the server:
-   ```bash
-   uvicorn server:app --reload --port 8000
-   ```
+## Tech Stack & Architecture
 
-### Frontend Setup
+DebtWise is designed as a decoupled full-stack application:
 
-1. Move into the frontend directory:
-   ```bash
-   cd ../frontend
-   ```
-2. Install Node packages:
-   ```bash
-   npm install
-   ```
-3. Start the React app:
-   ```bash
-   npm start
-   ```
-   Open [http://localhost:3000](http://localhost:3000) to view the app.
+* **Frontend (React)**: Built as a single-page application using React 19, React Router 7, Radix UI primitives, and Tailwind CSS. It uses a high-contrast dark theme with glassmorphic cards and glowing visual states.
+* **Backend (FastAPI)**: A lightweight, asynchronous Python API using Pydantic v2 for strict request validation and structured schemas.
+* **Database (MongoDB)**: Utilizes the Motor async driver to manage user records, active debts, encrypted Plaid items, transaction states, and reminder logs.
+* **Testing (Pytest)**: Integrates a comprehensive integration and unit test suite covering auth flows, strategy simulations, limits, and automated workers.
 
-## Running Tests
+---
 
-To run the backend tests:
-```bash
-pytest backend/tests
-```
+## Running the Project
+
+* **Backend Dev Server**: `uvicorn server:app --reload` (started within the `backend` directory)
+* **Frontend Dev Server**: `npm start` (started within the `frontend` directory)
+* **Run Tests**: `pytest backend/tests`
