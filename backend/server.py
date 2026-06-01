@@ -25,6 +25,15 @@ from emergentintegrations.payments.stripe.checkout import (
 )
 import resend
 from twilio.rest import Client as TwilioClient
+import plaid
+from plaid.api import plaid_api
+from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.products import Products
+from plaid.model.country_code import CountryCode
+from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.accounts_get_request import AccountsGetRequest
+from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 
 # ============================================================
 # Setup
@@ -580,7 +589,7 @@ def sms_enabled() -> bool:
 
 async def send_email_async(to: str, subject: str, html: str, text: Optional[str] = None) -> dict:
     if not email_enabled():
-        logger.info(f"[email no-op] would send to {to}: {subject}")
+        logger.debug(f"[email no-op] would send to {to}: {subject}")
         return {"sent": False, "reason": "RESEND_API_KEY not configured"}
     resend.api_key = os.environ["RESEND_API_KEY"]
     sender = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
@@ -597,7 +606,7 @@ async def send_email_async(to: str, subject: str, html: str, text: Optional[str]
 
 async def send_sms_async(to: str, body: str) -> dict:
     if not sms_enabled():
-        logger.info(f"[sms no-op] would send to {to}: {body[:60]}…")
+        logger.debug(f"[sms no-op] would send to {to}: {body[:60]}…")
         return {"sent": False, "reason": "Twilio not configured"}
     try:
         twilio = TwilioClient(
@@ -873,11 +882,12 @@ async def subscription_status(
     except Exception as e:
         # Library/proxy inconsistency: create_checkout_session may route through
         # the Emergent proxy while get_checkout_status hits api.stripe.com directly.
-        # Fail soft: return current DB state and let the webhook handle the grant.
+        # Fail soft: return 'unpaid' so the frontend polling loop can continue;
+        # the webhook will handle the actual grant when payment completes.
         logger.warning(f"Stripe status poll failed for {session_id}: {e}")
         return {
-            "payment_status": txn.get("payment_status", "unpaid"),
-            "status": txn.get("status", "open"),
+            "payment_status": "unpaid",
+            "status": "open",
             "amount_total": int(txn["amount"] * 100),
             "currency": txn["currency"],
         }
@@ -979,6 +989,249 @@ async def stripe_webhook(request: Request):
 
 
 # ============================================================
+# Plaid (account linking)
+# ============================================================
+def plaid_enabled() -> bool:
+    return bool(os.environ.get("PLAID_CLIENT_ID") and os.environ.get("PLAID_SECRET"))
+
+
+def _plaid_client():
+    env_name = os.environ.get("PLAID_ENV", "sandbox").lower()
+    host_map = {
+        "sandbox": plaid.Environment.Sandbox,
+        "production": plaid.Environment.Production,
+    }
+    host = host_map.get(env_name, plaid.Environment.Sandbox)
+    cfg = plaid.Configuration(
+        host=host,
+        api_key={
+            "clientId": os.environ["PLAID_CLIENT_ID"],
+            "secret": os.environ["PLAID_SECRET"],
+            "plaidVersion": "2020-09-14",
+        },
+    )
+    return plaid_api.PlaidApi(plaid.ApiClient(cfg))
+
+
+class PlaidExchangePayload(BaseModel):
+    public_token: str
+    institution_name: Optional[str] = None
+
+
+def _map_plaid_subtype(account_type: str, account_subtype: Optional[str]) -> str:
+    s = (account_subtype or "").lower()
+    if s in ("credit card", "paypal"):
+        return "credit_card"
+    if s == "student":
+        return "student_loan"
+    if s == "mortgage":
+        return "mortgage"
+    if s == "auto":
+        return "car_loan"
+    if account_type == "loan":
+        return "personal_loan"
+    return "other"
+
+
+@api_router.get("/plaid/status")
+async def plaid_status(user: dict = Depends(get_current_user)):
+    items = await db.plaid_items.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "access_token": 0}
+    ).to_list(length=100)
+    return {"enabled": plaid_enabled(), "env": os.environ.get("PLAID_ENV", "sandbox"), "items": items}
+
+
+@api_router.post("/plaid/link-token")
+async def plaid_link_token(user: dict = Depends(get_current_user)):
+    if not plaid_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Plaid is not configured. Add PLAID_CLIENT_ID and PLAID_SECRET to enable account linking.",
+        )
+    client = _plaid_client()
+    req = LinkTokenCreateRequest(
+        user=LinkTokenCreateRequestUser(client_user_id=user["user_id"]),
+        client_name="DebtWise",
+        products=[Products("liabilities")],
+        language="en",
+        country_codes=[CountryCode("US")],
+    )
+    try:
+        resp = await asyncio.to_thread(client.link_token_create, req)
+    except Exception as e:
+        logger.warning(f"Plaid link_token_create failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Plaid error: {e}")
+    return {"link_token": resp["link_token"], "expiration": str(resp.get("expiration"))}
+
+
+@api_router.post("/plaid/exchange")
+async def plaid_exchange(payload: PlaidExchangePayload, user: dict = Depends(get_current_user)):
+    if not plaid_enabled():
+        raise HTTPException(status_code=503, detail="Plaid is not configured.")
+    client = _plaid_client()
+    try:
+        ex = await asyncio.to_thread(
+            client.item_public_token_exchange,
+            ItemPublicTokenExchangeRequest(public_token=payload.public_token),
+        )
+    except Exception as e:
+        logger.warning(f"Plaid exchange failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Plaid error: {e}")
+
+    access_token = ex["access_token"]
+    item_id = ex["item_id"]
+    item_doc = {
+        "user_id": user["user_id"],
+        "item_id": item_id,
+        "access_token": access_token,  # NOTE: encrypt at rest in production
+        "institution_name": payload.institution_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.plaid_items.update_one(
+        {"user_id": user["user_id"], "item_id": item_id},
+        {"$set": item_doc},
+        upsert=True,
+    )
+    # Trigger an initial sync
+    imported = await _sync_plaid_item(user, item_doc)
+    return {"item_id": item_id, "imported": imported}
+
+
+async def _sync_plaid_item(user: dict, item: dict) -> int:
+    """Pull liabilities + accounts for one Item and upsert into debts. Returns imported count."""
+    if not plaid_enabled():
+        return 0
+    client = _plaid_client()
+    access_token = item["access_token"]
+    try:
+        liab = await asyncio.to_thread(
+            client.liabilities_get, LiabilitiesGetRequest(access_token=access_token)
+        )
+        accts = await asyncio.to_thread(
+            client.accounts_get, AccountsGetRequest(access_token=access_token)
+        )
+    except Exception as e:
+        logger.warning(f"Plaid sync failed: {e}")
+        return 0
+
+    by_account = {a["account_id"]: a for a in accts["accounts"]}
+    liabilities = liab["liabilities"]
+    imported = 0
+
+    def upsert(debt_doc, plaid_account_id):
+        nonlocal imported
+        existing = None  # noqa
+        return debt_doc, plaid_account_id
+
+    async def _upsert(debt_doc):
+        nonlocal imported
+        await db.debts.update_one(
+            {"user_id": user["user_id"], "plaid_account_id": debt_doc["plaid_account_id"]},
+            {"$set": debt_doc},
+            upsert=True,
+        )
+        imported += 1
+
+    # Credit cards
+    for c in liabilities.get("credit", []) or []:
+        acct = by_account.get(c["account_id"])
+        if not acct:
+            continue
+        balance = float(acct["balances"].get("current") or 0)
+        if balance <= 0:
+            continue
+        min_pay = c.get("minimum_payment_amount") or c.get("last_payment_amount") or 25
+        apr_list = c.get("aprs") or []
+        apr = next((float(a.get("apr_percentage") or 0) for a in apr_list if a.get("apr_percentage")), 19.99)
+        due = c.get("next_payment_due_date")
+        debt_doc = {
+            "debt_id": f"debt_plaid_{c['account_id'][:12]}",
+            "user_id": user["user_id"],
+            "name": acct.get("name") or acct.get("official_name") or "Credit Card",
+            "type": "credit_card",
+            "balance": balance,
+            "apr": apr,
+            "min_payment": float(min_pay),
+            "due_date": str(due) if due else None,
+            "plaid_account_id": c["account_id"],
+            "plaid_item_id": item["item_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await _upsert(debt_doc)
+
+    # Student loans
+    for s in liabilities.get("student", []) or []:
+        acct = by_account.get(s["account_id"])
+        if not acct:
+            continue
+        balance = float(acct["balances"].get("current") or 0)
+        if balance <= 0:
+            continue
+        due = s.get("next_payment_due_date")
+        debt_doc = {
+            "debt_id": f"debt_plaid_{s['account_id'][:12]}",
+            "user_id": user["user_id"],
+            "name": acct.get("name") or "Student Loan",
+            "type": "student_loan",
+            "balance": balance,
+            "apr": float(s.get("interest_rate_percentage") or 5.0),
+            "min_payment": float(s.get("minimum_payment_amount") or 50),
+            "due_date": str(due) if due else None,
+            "plaid_account_id": s["account_id"],
+            "plaid_item_id": item["item_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await _upsert(debt_doc)
+
+    # Mortgages
+    for m in liabilities.get("mortgage", []) or []:
+        acct = by_account.get(m["account_id"])
+        if not acct:
+            continue
+        balance = float(acct["balances"].get("current") or 0)
+        if balance <= 0:
+            continue
+        due = m.get("next_payment_due_date")
+        debt_doc = {
+            "debt_id": f"debt_plaid_{m['account_id'][:12]}",
+            "user_id": user["user_id"],
+            "name": acct.get("name") or "Mortgage",
+            "type": "mortgage",
+            "balance": balance,
+            "apr": float(m.get("interest_rate", {}).get("percentage") or 6.0),
+            "min_payment": float(m.get("next_monthly_payment") or 1500),
+            "due_date": str(due) if due else None,
+            "plaid_account_id": m["account_id"],
+            "plaid_item_id": item["item_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await _upsert(debt_doc)
+
+    await db.plaid_items.update_one(
+        {"user_id": user["user_id"], "item_id": item["item_id"]},
+        {"$set": {"last_sync_at": datetime.now(timezone.utc).isoformat(), "imported_count": imported}},
+    )
+    return imported
+
+
+@api_router.post("/plaid/sync")
+async def plaid_sync_all(user: dict = Depends(get_current_user)):
+    items = await db.plaid_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(length=50)
+    total = 0
+    for it in items:
+        total += await _sync_plaid_item(user, it)
+    return {"items": len(items), "imported": total}
+
+
+@api_router.delete("/plaid/items/{item_id}")
+async def plaid_remove_item(item_id: str, user: dict = Depends(get_current_user)):
+    res = await db.plaid_items.delete_one({"user_id": user["user_id"], "item_id": item_id})
+    # Optionally delete linked debts too
+    await db.debts.delete_many({"user_id": user["user_id"], "plaid_item_id": item_id})
+    return {"ok": True, "deleted": res.deleted_count}
+
+
+# ============================================================
 # Routes mounted
 # ============================================================
 @api_router.get("/")
@@ -1011,6 +1264,8 @@ async def startup():
     await db.payment_transactions.create_index("session_id", unique=True)
     await db.payment_transactions.create_index("user_id")
     await db.reminder_log.create_index("key", unique=True)
+    await db.plaid_items.create_index([("user_id", 1), ("item_id", 1)], unique=True)
+    await db.debts.create_index([("user_id", 1), ("plaid_account_id", 1)])
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@debtwise.app").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
