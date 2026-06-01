@@ -149,7 +149,7 @@ class TestDebts:
             "balance": 5000.0,
             "apr": 22.5,
             "min_payment": 150.0,
-            "due_day": 15,
+            "due_date": "2026-06-15",
         }
         r = auth_session.post(f"{API}/debts", json=payload)
         assert r.status_code == 200, r.text
@@ -222,9 +222,9 @@ class TestDebts:
 def seeded_debts(auth_session):
     debts = []
     payloads = [
-        {"name": "TEST_CC1", "type": "credit_card", "balance": 5000, "apr": 22.0, "min_payment": 150, "due_day": 10},
-        {"name": "TEST_CC2", "type": "credit_card", "balance": 1500, "apr": 18.0, "min_payment": 50, "due_day": 20},
-        {"name": "TEST_Car", "type": "car_loan", "balance": 12000, "apr": 6.5, "min_payment": 280, "due_day": 5},
+        {"name": "TEST_CC1", "type": "credit_card", "balance": 5000, "apr": 22.0, "min_payment": 150, "due_date": "2026-06-10"},
+        {"name": "TEST_CC2", "type": "credit_card", "balance": 1500, "apr": 18.0, "min_payment": 50, "due_date": "2026-06-20"},
+        {"name": "TEST_Car", "type": "car_loan", "balance": 12000, "apr": 6.5, "min_payment": 280, "due_date": "2026-06-05"},
     ]
     for p in payloads:
         r = auth_session.post(f"{API}/debts", json=p)
