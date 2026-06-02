@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, fmtMoney, formatApiErrorDetail } from "../lib/api";
 import { DEBT_TYPES, debtTypeMeta } from "../lib/constants";
-import { Plus, Pencil, Trash2, Wallet, CalendarIcon, Lock } from "lucide-react";
+import { Plus, Pencil, Trash2, Wallet, CalendarIcon, Lock, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../contexts/AuthContext";
@@ -51,9 +51,112 @@ export default function Debts() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [dateOpen, setDateOpen] = useState(false);
+  const [showCsvZone, setShowCsvZone] = useState(false);
+  const [csvLoading, setCsvLoading] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
   const isPremium = !!(user && user.premium_until && new Date(user.premium_until) > new Date());
+
+  const parseCSV = (text) => {
+    const lines = text.split(/\r?\n/);
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
+    const rows = [];
+    
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      const values = line.split(",").map((v) => v.replace(/^"|"$/g, "").trim());
+      const row = {};
+      headers.forEach((header, index) => {
+        row[header] = values[index];
+      });
+      rows.push(row);
+    }
+    return rows;
+  };
+
+  const downloadTemplate = () => {
+    const headers = "name,type,balance,apr,min_payment,due_date\nChase Sapphire,credit_card,5000,19.99,150,2026-06-15\nToyota Loan,car_loan,12000,4.5,280,2026-06-05";
+    const blob = new Blob([headers], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "debtwise_template.csv");
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleCsvUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setCsvLoading(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target.result;
+        const rows = parseCSV(text);
+        if (rows.length === 0) {
+          toast.error("No valid data found in CSV file.");
+          return;
+        }
+        
+        let importedCount = 0;
+        let limitReached = false;
+        
+        for (const row of rows) {
+          if (!isPremium && (debts.length + importedCount) >= 3) {
+            limitReached = true;
+            break;
+          }
+          
+          const balance = parseFloat(row.balance || row.amount);
+          const apr = parseFloat(row.apr || row.interest);
+          const min_payment = parseFloat(row.min_payment || row.minimum);
+          
+          if (!row.name || isNaN(balance) || isNaN(apr) || isNaN(min_payment)) {
+            continue;
+          }
+          
+          let type = (row.type || "credit_card").toLowerCase().replace(/\s+/g, "_");
+          const validTypes = ["credit_card", "personal_loan", "car_loan", "student_loan", "mortgage", "medical", "other"];
+          if (!validTypes.includes(type)) {
+            type = "other";
+          }
+          
+          const payload = {
+            name: row.name,
+            type,
+            balance,
+            apr,
+            min_payment,
+            due_date: row.due_date || null
+          };
+          
+          await api.post("/debts", payload);
+          importedCount++;
+        }
+        
+        toast.success(`Successfully imported ${importedCount} debts!`);
+        if (limitReached) {
+          toast.info("Some debts were skipped due to free tier limit. Upgrade for unlimited slots.");
+        }
+        await load();
+        setShowCsvZone(false);
+      } catch (err) {
+        console.error(err);
+        toast.error("Error reading or importing CSV file.");
+      } finally {
+        setCsvLoading(false);
+        e.target.value = "";
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -148,15 +251,64 @@ export default function Debts() {
             {debts.length} {debts.length === 1 ? "debt" : "debts"} · {fmtMoney(totalDebt)} total
           </p>
         </div>
-        <button
-          onClick={openAdd}
-          className="bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-5 py-2.5 text-sm font-medium transition-all shadow-[0_0_30px_rgba(37,99,235,0.4)] inline-flex items-center gap-2 self-start"
-          data-testid="add-debt-btn"
-        >
-          <Plus className="w-4 h-4" />
-          Add debt
-        </button>
+        <div className="flex gap-3 self-start">
+          <button
+            onClick={() => setShowCsvZone(!showCsvZone)}
+            className="bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg px-5 py-2.5 text-sm font-medium transition-all inline-flex items-center gap-2"
+            data-testid="toggle-csv-btn"
+          >
+            <Upload className="w-4 h-4" />
+            Import CSV
+          </button>
+          <button
+            onClick={openAdd}
+            className="bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-5 py-2.5 text-sm font-medium transition-all shadow-[0_0_30px_rgba(37,99,235,0.4)] inline-flex items-center gap-2"
+            data-testid="add-debt-btn"
+          >
+            <Plus className="w-4 h-4" />
+            Add debt
+          </button>
+        </div>
       </div>
+
+      {/* CSV Import Zone */}
+      {showCsvZone && (
+        <div className="glass rounded-2xl p-6 mb-6 animate-fade-up" data-testid="csv-import-zone">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+            <div>
+              <h3 className="font-display text-lg font-medium text-slate-200">Import debts from spreadsheet</h3>
+              <p className="text-slate-400 text-xs mt-1">
+                Upload a standard CSV file with headers: <code className="text-blue-400 font-mono">name, type, balance, apr, min_payment, due_date</code>
+              </p>
+            </div>
+            <button
+              onClick={downloadTemplate}
+              className="text-xs text-blue-400 hover:text-blue-300 font-medium self-start sm:self-center"
+            >
+              Download CSV Template
+            </button>
+          </div>
+
+          <div className="border-2 border-dashed border-white/10 rounded-xl p-8 text-center bg-white/[0.01] hover:bg-white/[0.02] hover:border-white/20 transition-all relative">
+            {csvLoading ? (
+              <div className="text-slate-300 text-sm animate-pulse">Parsing and importing debts...</div>
+            ) : (
+              <div>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleCsvUpload}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  data-testid="csv-file-input"
+                />
+                <Upload className="w-8 h-8 text-slate-500 mx-auto mb-3" />
+                <p className="text-sm font-medium text-slate-300">Click to select or drag your CSV file here</p>
+                <p className="text-xs text-slate-500 mt-1">Supports file formats matching the template columns</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-slate-400 text-sm tracking-widest uppercase">Loading…</div>

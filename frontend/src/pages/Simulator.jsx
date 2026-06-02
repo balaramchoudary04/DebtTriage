@@ -13,7 +13,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import { TrendingUp, Sparkles, Lock, Crown } from "lucide-react";
+import { TrendingUp, Sparkles, Lock, Crown, Coffee, Tv, Briefcase, Utensils } from "lucide-react";
 
 export default function Simulator() {
   const { user } = useAuth();
@@ -154,6 +154,42 @@ export default function Simulator() {
             </div>
           </div>
 
+
+          <div className="mb-6">
+            <label className="text-xs text-slate-400 tracking-widest uppercase block mb-3">
+              Habit Presets (Quick Add)
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: "Skip Coffee", amount: 150, icon: <Coffee className="w-3.5 h-3.5 text-amber-400" /> },
+                { label: "Cut Subs", amount: 50, icon: <Tv className="w-3.5 h-3.5 text-blue-400" /> },
+                { label: "Weekend Gig", amount: 400, icon: <Briefcase className="w-3.5 h-3.5 text-emerald-400" /> },
+                { label: "Eat Out Less", amount: 250, icon: <Utensils className="w-3.5 h-3.5 text-rose-400" /> },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => {
+                    setExtra(p.amount);
+                    compute(strategy, p.amount);
+                  }}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    extra === p.amount
+                      ? "bg-blue-600/15 border-blue-500/40 text-white"
+                      : "bg-white/5 border-white/10 text-slate-400 hover:text-white"
+                  }`}
+                  data-testid={`sim-preset-${p.label.toLowerCase().replace(/\s+/g, "-")}`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    {p.icon}
+                    <span className="text-xs font-semibold">{p.label}</span>
+                  </div>
+                  <span className="text-sm font-medium text-slate-200">+{fmtMoney(p.amount)}/mo</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div>
             <div className="flex items-center justify-between mb-4">
               <label className="text-xs text-slate-400 tracking-widest uppercase">
@@ -164,7 +200,7 @@ export default function Simulator() {
               </span>
             </div>
             <Slider
-              defaultValue={[0]}
+              value={[extra]}
               min={0}
               max={2000}
               step={25}

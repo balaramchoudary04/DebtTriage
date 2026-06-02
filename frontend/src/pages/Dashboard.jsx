@@ -245,6 +245,96 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Payoff Pipeline Progression */}
+      <div className="glass rounded-2xl p-6 mb-10 animate-fade-up delay-200" data-testid="card-payoff-pipeline">
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <p className="text-label">Strategy Pathway</p>
+            <h3 className="font-display text-lg font-medium mt-1">Payoff order pipeline</h3>
+          </div>
+          <div className="text-xs text-slate-400">
+            Based on the <span className="text-blue-400 font-medium">Avalanche Method</span> optimization
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {[...debts]
+            .map((d) => {
+              const match = avalanche?.per_debt?.find((p) => p.debt_id === d.debt_id);
+              return {
+                ...d,
+                payoff_month: match ? match.payoff_month : 999,
+                interest_paid: match ? match.interest_paid : 0,
+              };
+            })
+            .sort((a, b) => a.payoff_month - b.payoff_month)
+            .map((d, index) => {
+              const meta = debtTypeMeta(d.type);
+              const isActiveTarget = index === 0;
+              const targetDate = (() => {
+                if (d.payoff_month === 999) return "—";
+                const now = new Date();
+                now.setDate(1);
+                now.setMonth(now.getMonth() + d.payoff_month);
+                return now.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+              })();
+              
+              return (
+                <div
+                  key={d.debt_id}
+                  className={`glass-subtle border rounded-2xl p-5 relative overflow-hidden transition-all duration-300 ${
+                    isActiveTarget 
+                      ? "border-blue-500/30 bg-blue-600/5 shadow-[0_0_20px_rgba(37,99,235,0.05)]" 
+                      : "border-white/5"
+                  }`}
+                  data-testid={`pipeline-item-${d.debt_id}`}
+                >
+                  {/* Status indicator */}
+                  <div className="flex items-center justify-between mb-4">
+                    <span 
+                      className={`text-[10px] tracking-widest uppercase font-bold px-2 py-0.5 rounded-full ${
+                        isActiveTarget 
+                          ? "bg-blue-600/20 text-blue-400 border border-blue-500/30 animate-pulse" 
+                          : "bg-white/5 text-slate-400 border border-white/5"
+                      }`}
+                    >
+                      {isActiveTarget ? "★ Active Target" : `Step ${index + 1}`}
+                    </span>
+                    <span className="text-xs text-slate-500 font-medium">
+                      Target: {targetDate}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 mb-2">
+                    <span 
+                      className="w-2.5 h-2.5 rounded-full shrink-0" 
+                      style={{ 
+                        background: meta.color, 
+                        boxShadow: `0 0 10px ${meta.color}` 
+                      }} 
+                    />
+                    <h4 className="font-display font-medium text-slate-200 truncate">{d.name}</h4>
+                  </div>
+
+                  <div className="font-display text-xl font-light text-slate-300 mb-4">
+                    {fmtMoney(d.balance)}
+                  </div>
+
+                  <div className="space-y-1.5 text-xs border-t border-white/5 pt-3">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Interest rate</span>
+                      <span className="text-slate-300 font-medium">{d.apr.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Payoff time</span>
+                      <span className="text-slate-300 font-medium">{d.payoff_month} months</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      </div>
+
       {/* Strategy comparison + reminders */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div className="glass rounded-2xl p-6 lg:col-span-2" data-testid="card-strategy-compare">
