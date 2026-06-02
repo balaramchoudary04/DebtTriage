@@ -13,12 +13,31 @@ export default function Login() {
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const { login, register, user } = useAuth();
+  const { login, register, user, exchangeSession } = useAuth();
   const navigate = useNavigate();
 
+  const redirectUrl = window.location.origin + "/login";
+
   useEffect(() => {
+    const code = params.get("code");
+    if (code) {
+      setSubmitting(true);
+      exchangeSession(code, redirectUrl)
+        .then(() => {
+          toast.success("Welcome back!");
+          navigate("/dashboard", { replace: true });
+        })
+        .catch((err) => {
+          setError(formatApiErrorDetail(err.response?.data?.detail) || "Google sign-in failed.");
+          toast.error("Google sign-in failed. Please try again.");
+        })
+        .finally(() => {
+          setSubmitting(false);
+        });
+      return;
+    }
     if (user) navigate("/dashboard", { replace: true });
-  }, [user, navigate]);
+  }, [user, navigate, params, redirectUrl, exchangeSession]);
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -40,10 +59,14 @@ export default function Login() {
     }
   };
 
-  // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
   const onGoogleSignin = () => {
-    const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    const clientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      toast.error("Google OAuth Client ID is not configured on the frontend. Add REACT_APP_GOOGLE_CLIENT_ID to your frontend environment.");
+      return;
+    }
+    const target = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUrl)}&response_type=code&scope=openid%20email%20profile`;
+    window.location.href = target;
   };
 
   return (

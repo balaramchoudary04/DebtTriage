@@ -49,8 +49,8 @@ export function AuthProvider({ children }) {
     setUser(false);
   };
 
-  const exchangeSession = async (session_id) => {
-    const { data } = await api.post("/auth/session", { session_id });
+  const exchangeSession = async (code, redirect_uri) => {
+    const { data } = await api.post("/auth/session", { code, redirect_uri });
     setUser(data);
     return data;
   };
