@@ -1,6 +1,6 @@
 """DebtWise backend API tests (pytest).
 
-Covers: auth (register/login/me/logout), Emergent session 401, debts CRUD,
+Covers: auth (register/login/me/logout), Google OAuth session 401, debts CRUD,
 strategies calculate + compare, reminders, brute force lockout.
 """
 import os
@@ -99,12 +99,12 @@ class TestAuth:
         r2 = s.get(f"{API}/auth/me")
         assert r2.status_code == 401
 
-    def test_emergent_session_invalid_returns_401(self):
+    def test_oauth_session_invalid_returns_401(self):
         # Should NOT 500 on bad session_id; gracefully returns 401
         r = requests.post(f"{API}/auth/session", json={"session_id": "invalid_session_xyz_123"})
         assert r.status_code == 401, f"Expected 401, got {r.status_code}: {r.text}"
 
-    def test_emergent_session_missing_field_422(self):
+    def test_oauth_session_missing_field_422(self):
         r = requests.post(f"{API}/auth/session", json={})
         assert r.status_code == 422
 

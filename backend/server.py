@@ -200,7 +200,7 @@ async def get_current_user(request: Request) -> dict:
         except jwt.PyJWTError:
             pass
 
-    # Try Emergent OAuth session
+    # Try Google OAuth session
     session_token = request.cookies.get("session_token")
     if not session_token:
         auth_header = request.headers.get("Authorization", "")
@@ -307,7 +307,7 @@ async def me(user: dict = Depends(get_current_user)):
 
 @api_router.post("/auth/session")
 async def emergent_session(payload: SessionPayload, response: Response):
-    """Exchange Emergent session_id for a session_token cookie."""
+    """Exchange Google OAuth session_id for a session_token cookie."""
     async with httpx.AsyncClient(timeout=10) as hx:
         r = await hx.get(
             "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
@@ -1300,11 +1300,11 @@ async def startup():
 - POST /api/auth/login
 - POST /api/auth/logout
 - GET  /api/auth/me
-- POST /api/auth/session  (Emergent Google OAuth exchange)
+- POST /api/auth/session  (Google OAuth exchange)
 
 ## Notes
 - JWT auth uses httpOnly cookies (`access_token`, `refresh_token`).
-- Google OAuth uses `session_token` cookie via Emergent Auth.
+- Google OAuth uses `session_token` cookie.
 """
     )
     logger.info("Startup complete.")

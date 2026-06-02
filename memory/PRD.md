@@ -4,14 +4,14 @@
 > Build an app that manages a person's debt profile. Let users add all kinds of debt (credit card, personal loan, car loan, student loan, etc.). The main goal is to suggest different payoff methods (avalanche, snowball, etc.) so users resolve debt strategically. UI must be professional, smooth, and glassy.
 
 ## User choices (Feb 2026)
-- Auth: BOTH JWT email/password AND Emergent Google OAuth
+- Auth: BOTH JWT email/password AND Google OAuth
 - Strategies: Full suite — Avalanche, Snowball, Highest Payment, Custom
 - Visualizations: Full dashboard (timeline, pie, interest comparison, progress)
 - Extras: Extra-payment simulator + payment reminders + core debt mgmt
 - Style: Dark theme with deep navy/teal glass panels
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB (Motor). JWT (httpOnly cookies) + Emergent OAuth session exchange.
+- **Backend**: FastAPI + MongoDB (Motor). JWT (httpOnly cookies) + Google OAuth session exchange.
 - **Frontend**: React 19 + react-router 7 + Shadcn UI + Recharts + Lucide icons + Sonner toasts.
 - **Theme**: deep-navy `#020617` base, glass panels (rgba 15/23/42 + backdrop-blur-xl), Outfit display + Manrope body fonts.
 
@@ -21,7 +21,7 @@
 - Cash-flow strapped user who needs to free monthly budget first (Highest Payment).
 
 ## Implemented (2026-02-21, updated iter 3)
-- Auth: register/login/logout/me, JWT cookies, brute-force lockout, admin seeding, `/api/auth/session` for Emergent OAuth.
+- Auth: register/login/logout/me, JWT cookies, brute-force lockout, admin seeding, `/api/auth/session` for Google OAuth session exchange.
 - Debts CRUD (user-scoped) with 7 debt types and **strict `due_date`** (Python `date`, rejects invalid like Feb 31).
 - Strategy engine: month-by-month simulation for Avalanche, Snowball, Highest Payment, Custom with snowball roll-over of freed minimums + freed per-debt extras. Capped at 600 months.
 - `/api/strategies/calculate` accepts `custom_order` + **`per_debt_extra`** (per-debt $/mo overrides).

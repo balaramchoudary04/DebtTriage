@@ -19,7 +19,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    // If returning from Emergent OAuth callback (URL fragment contains session_id),
+    // If returning from Google OAuth callback (URL fragment contains session_id),
     // skip /auth/me — AuthCallback will exchange the session first.
     if (window.location.hash?.includes("session_id=")) {
       setLoading(false);
