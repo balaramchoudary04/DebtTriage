@@ -19,10 +19,87 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depend
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
-from emergentintegrations.payments.stripe.checkout import (
-    StripeCheckout,
-    CheckoutSessionRequest,
-)
+import stripe
+
+class CheckoutSessionRequest(BaseModel):
+    amount: float
+    currency: str
+    success_url: str
+    cancel_url: str
+    metadata: dict
+
+class StripeSessionResponse:
+    def __init__(self, session_id: str, url: str):
+        self.session_id = session_id
+        self.url = url
+
+class StripeStatusResponse:
+    def __init__(self, payment_status: str, status: str, amount_total: int, currency: str):
+        self.payment_status = payment_status
+        self.status = status
+        self.amount_total = amount_total
+        self.currency = currency
+
+class StripeWebhookResponse:
+    def __init__(self, session_id: str, payment_status: str, event_type: str, event_id: str):
+        self.session_id = session_id
+        self.payment_status = payment_status
+        self.event_type = event_type
+        self.event_id = event_id
+
+class StripeCheckout:
+    def __init__(self, api_key: str, webhook_url: str):
+        self.api_key = api_key
+        self.webhook_url = webhook_url
+        stripe.api_key = api_key
+
+    async def create_checkout_session(self, req: CheckoutSessionRequest):
+        def _create():
+            session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                line_items=[{
+                    "price_data": {
+                        "currency": req.currency,
+                        "product_data": {
+                            "name": "DebtWise Premium Plan",
+                        },
+                        "unit_amount": int(req.amount * 100),
+                    },
+                    "quantity": 1,
+                }],
+                mode="payment",
+                success_url=req.success_url,
+                cancel_url=req.cancel_url,
+                metadata=req.metadata,
+            )
+            return StripeSessionResponse(session.id, session.url)
+        return await asyncio.to_thread(_create)
+
+    async def get_checkout_status(self, session_id: str):
+        def _get():
+            session = stripe.checkout.Session.retrieve(session_id)
+            return StripeStatusResponse(
+                payment_status=session.payment_status,
+                status=session.status,
+                amount_total=session.amount_total or 0,
+                currency=session.currency or "usd"
+            )
+        return await asyncio.to_thread(_get)
+
+    async def handle_webhook(self, body: bytes, signature: str):
+        def _handle():
+            import json
+            data = json.loads(body.decode("utf-8"))
+            event_type = data.get("type")
+            event_id = data.get("id")
+            session = data.get("data", {}).get("object", {})
+            return StripeWebhookResponse(
+                session_id=session.get("id"),
+                payment_status=session.get("payment_status", "unpaid"),
+                event_type=event_type,
+                event_id=event_id
+            )
+        return await asyncio.to_thread(_handle)
 import resend
 from twilio.rest import Client as TwilioClient
 import plaid
