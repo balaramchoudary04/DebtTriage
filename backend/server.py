@@ -1426,6 +1426,7 @@ async def startup():
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@debtwise.app").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
     existing = await db.users.find_one({"email": admin_email})
+    admin_premium_until = (datetime.now(timezone.utc) + timedelta(days=3650)).isoformat()
     if not existing:
         await db.users.insert_one({
             "user_id": f"user_{uuid.uuid4().hex[:12]}",
@@ -1435,10 +1436,20 @@ async def startup():
             "picture": None,
             "auth_provider": "email",
             "role": "admin",
+            "premium_until": admin_premium_until,
+            "plan": "annual",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    elif not verify_password(admin_password, existing.get("password_hash", "")):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
+    else:
+        # Always ensure admin user has active premium status in development
+        await db.users.update_one(
+            {"email": admin_email},
+            {"$set": {
+                "premium_until": admin_premium_until,
+                "plan": "annual",
+                "password_hash": hash_password(admin_password)
+            }}
+        )
 
     # Write test credentials
     creds_path = Path(__file__).resolve().parent.parent / "memory"
