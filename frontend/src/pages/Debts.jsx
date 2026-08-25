@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { api, fmtMoney, formatApiErrorDetail } from "../lib/api";
 import { DEBT_TYPES, debtTypeMeta } from "../lib/constants";
-import { Plus, Pencil, Trash2, Wallet, CalendarIcon, Lock, Upload } from "lucide-react";
+import { Plus, Pencil, Trash2, Wallet, CalendarIcon, Lock, Upload, Landmark } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from "../contexts/AuthContext";
+import PlaidConnectButton from "../components/PlaidConnectButton";
 import {
   Dialog,
   DialogContent,
@@ -53,6 +54,7 @@ export default function Debts() {
   const [dateOpen, setDateOpen] = useState(false);
   const [showCsvZone, setShowCsvZone] = useState(false);
   const [csvLoading, setCsvLoading] = useState(false);
+  const [plaidEnabled, setPlaidEnabled] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
   const isPremium = !!(user && user.premium_until && new Date(user.premium_until) > new Date());
@@ -170,6 +172,10 @@ export default function Debts() {
 
   useEffect(() => {
     load();
+    api
+      .get("/plaid/status")
+      .then(({ data }) => setPlaidEnabled(data.enabled))
+      .catch(() => {});
   }, []);
 
   const openAdd = () => {
@@ -252,6 +258,15 @@ export default function Debts() {
           </p>
         </div>
         <div className="flex gap-3 self-start">
+          {plaidEnabled && (
+            <PlaidConnectButton
+              onLinked={load}
+              className="bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg px-5 py-2.5 text-sm font-medium transition-all inline-flex items-center gap-2"
+            >
+              <Landmark className="w-4 h-4" />
+              Connect bank
+            </PlaidConnectButton>
+          )}
           <button
             onClick={() => setShowCsvZone(!showCsvZone)}
             className="bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg px-5 py-2.5 text-sm font-medium transition-all inline-flex items-center gap-2"
@@ -362,6 +377,15 @@ export default function Debts() {
                       <span className="text-xs uppercase tracking-widest text-slate-400">
                         {meta.label}
                       </span>
+                      {d.plaid_account_id && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-blue-300 bg-blue-500/15 border border-blue-500/30 rounded-full px-2 py-0.5"
+                          data-testid={`debt-synced-${d.debt_id}`}
+                        >
+                          <Landmark className="w-2.5 h-2.5" />
+                          Synced
+                        </span>
+                      )}
                     </div>
                     <h3 className="font-display text-xl font-medium tracking-tight">{d.name}</h3>
                   </div>

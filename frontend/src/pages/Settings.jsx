@@ -16,7 +16,12 @@ import {
   Mail,
   MessageSquare,
   Send,
+  Landmark,
+  Plus,
+  RefreshCw,
+  Unlink,
 } from "lucide-react";
+import PlaidConnectButton from "../components/PlaidConnectButton";
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -41,12 +46,51 @@ export default function Settings() {
   const [sub, setSub] = useState(null);
   const [checkoutLoading, setCheckoutLoading] = useState(null);
   const [polling, setPolling] = useState(false);
+  const [plaidStatus, setPlaidStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [disconnectingId, setDisconnectingId] = useState(null);
   const navigate = useNavigate();
   const upgradeAnchor = params.get("upgrade") === "1";
 
   const loadSub = async () => {
     const { data } = await api.get("/subscription/me");
     setSub(data);
+  };
+
+  const loadPlaidStatus = async () => {
+    try {
+      const { data } = await api.get("/plaid/status");
+      setPlaidStatus(data);
+    } catch {
+      // ignore — leave section hidden
+    }
+  };
+
+  const syncAllPlaid = async () => {
+    setSyncing(true);
+    try {
+      const { data } = await api.post("/plaid/sync");
+      toast.success(`Synced ${data.items} account${data.items === 1 ? "" : "s"} — ${data.imported} debt${data.imported === 1 ? "" : "s"} updated.`);
+      await loadPlaidStatus();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || e.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const disconnectPlaidItem = async (itemId) => {
+    if (!window.confirm("Disconnect this bank? Debts imported from it will be removed.")) return;
+    setDisconnectingId(itemId);
+    try {
+      await api.delete(`/plaid/items/${itemId}`);
+      toast.success("Bank disconnected.");
+      await loadPlaidStatus();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || e.message);
+    } finally {
+      setDisconnectingId(null);
+    }
   };
 
   useEffect(() => {
@@ -58,6 +102,7 @@ export default function Settings() {
 
   useEffect(() => {
     loadSub();
+    loadPlaidStatus();
   }, []);
 
   useEffect(() => {
@@ -328,6 +373,81 @@ export default function Settings() {
           </button>
         </div>
       </section>
+
+      {/* Linked accounts (Plaid) */}
+      {(plaidStatus?.enabled || plaidStatus?.items?.length > 0) && (
+        <section className="glass rounded-2xl p-6 mb-6" data-testid="plaid-section">
+          <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl glass-subtle flex items-center justify-center">
+                <Landmark className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-label">Bank sync</p>
+                <h3 className="font-display text-xl font-medium mt-1">Linked accounts</h3>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {plaidStatus?.items?.length > 0 && (
+                <button
+                  onClick={syncAllPlaid}
+                  disabled={syncing}
+                  className="bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg px-4 py-2 text-sm transition-colors inline-flex items-center gap-2 disabled:opacity-60"
+                  data-testid="plaid-sync-all-btn"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+                  Sync now
+                </button>
+              )}
+              {plaidStatus?.enabled && (
+                <PlaidConnectButton
+                  onLinked={loadPlaidStatus}
+                  className="bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-4 py-2 text-sm font-medium transition-all inline-flex items-center gap-2"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Connect bank
+                </PlaidConnectButton>
+              )}
+            </div>
+          </div>
+
+          {plaidStatus?.items?.length > 0 ? (
+            <div className="space-y-3">
+              {plaidStatus.items.map((item) => (
+                <div
+                  key={item.item_id}
+                  className="glass-subtle rounded-xl p-4 flex items-center gap-4 border border-white/5"
+                  data-testid={`plaid-item-${item.item_id}`}
+                >
+                  <div className="w-9 h-9 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                    <Landmark className="w-4 h-4 text-blue-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{item.institution_name || "Connected account"}</p>
+                    <p className="text-xs text-slate-500">
+                      {item.imported_count ?? 0} debt{item.imported_count === 1 ? "" : "s"} imported · Last synced{" "}
+                      {item.last_sync_at ? fmtDate(item.last_sync_at) : "never"}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => disconnectPlaidItem(item.item_id)}
+                    disabled={disconnectingId === item.item_id}
+                    className="p-2 hover:bg-red-500/10 rounded-lg disabled:opacity-60 shrink-0"
+                    aria-label="Disconnect"
+                    data-testid={`plaid-disconnect-${item.item_id}`}
+                  >
+                    <Unlink className="w-3.5 h-3.5 text-slate-400 hover:text-red-400" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">
+              No banks connected yet. Connect one to automatically import balances, APRs, and due dates.
+            </p>
+          )}
+        </section>
+      )}
 
       {/* Subscription */}
       <section

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
 import { api, formatApiErrorDetail } from "../lib/api";
 
 const AuthContext = createContext(null);
@@ -28,40 +28,39 @@ export function AuthProvider({ children }) {
     checkAuth();
   }, [checkAuth]);
 
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
     setUser(data);
     return data;
-  };
+  }, []);
 
-  const register = async (email, password, name) => {
+  const register = useCallback(async (email, password, name) => {
     const { data } = await api.post("/auth/register", { email, password, name });
     setUser(data);
     return data;
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
     } catch {
       // ignore
     }
     setUser(false);
-  };
+  }, []);
 
-  const exchangeSession = async (code, redirect_uri) => {
+  const exchangeSession = useCallback(async (code, redirect_uri) => {
     const { data } = await api.post("/auth/session", { code, redirect_uri });
     setUser(data);
     return data;
-  };
+  }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{ user, loading, login, register, logout, exchangeSession, checkAuth, formatApiErrorDetail }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({ user, loading, login, register, logout, exchangeSession, checkAuth, formatApiErrorDetail }),
+    [user, loading, login, register, logout, exchangeSession, checkAuth]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

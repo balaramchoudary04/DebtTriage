@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { formatApiErrorDetail } from "../lib/api";
@@ -17,10 +17,13 @@ export default function Login() {
   const navigate = useNavigate();
 
   const redirectUrl = window.location.origin + "/login";
+  const exchangedCodeRef = useRef(null);
 
   useEffect(() => {
     const code = params.get("code");
     if (code) {
+      if (exchangedCodeRef.current === code) return;
+      exchangedCodeRef.current = code;
       setSubmitting(true);
       exchangeSession(code, redirectUrl)
         .then(() => {
